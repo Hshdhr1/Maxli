@@ -134,7 +134,7 @@ class InfoModule:
             # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
             chat_id = getattr(message, 'chat_id', None)
             if not chat_id:
-                chat_id = await api.await_chat_id(message)
+                chat_id = await api.get_chat_id_for_message(message)
 
             if chat_id:
                 # Проверяем кеш: если url совпадает и файл существует, используем кеш
@@ -180,7 +180,7 @@ class InfoModule:
             # Если редактирование не удалось (например, сообщение уже удалено), отправляем новое
             chat_id = getattr(message, 'chat_id', None)
             if not chat_id:
-                chat_id = await api.await_chat_id(message)
+                chat_id = await api.get_chat_id_for_message(message)
             await api.send(chat_id, info_text, notify=True, markdown=True)
 
 
@@ -234,7 +234,7 @@ async def help_command(api, message, args):
         # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
         chat_id = getattr(message, 'chat_id', None)
         if not chat_id:
-            chat_id = await api.await_chat_id(message)
+            chat_id = await api.get_chat_id_for_message(message)
 
         if chat_id:
             try:

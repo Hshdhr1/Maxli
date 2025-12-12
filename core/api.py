@@ -8,8 +8,8 @@ import time
 
 # --- КОНФИГУРАЦИЯ БОТА ---
 BOT_NAME = "Maxli"
-BOT_VERSION = "0.3.3" # Повышаем версию
-BOT_VERSION_CODE = 34
+BOT_VERSION = "0.3.4" # Повышаем версию
+BOT_VERSION_CODE = 35
 MODULES_DIR = Path("modules")
 LOG_BUFFER = []  # Глобальный буфер логов (последние строки)
  
@@ -224,38 +224,21 @@ class API:
 
             if markdown:
                 # Парсим markdown в clean_text + элементы (UTF-16 индексы)
-                from pymax.markdown_parser import get_markdown_parser
-                parser = get_markdown_parser()
-                clean_text, elements = parser.parse(text)
+                # В новой версии используем pymax.formatting
+                from pymax.formatting import Formatting
+                formatter = Formatting()
+                elements, clean_text = formatter.get_elements_from_markdown(text)
+                clean_text = clean_text.rstrip('\n')  # Убираем trailing newline
                 print(f"📝 Markdown парсинг (edit): '{text}' -> '{clean_text}' с {len(elements)} элементами")
                 print(f"🔍 Элементы: {elements}")
 
-                # 1) Редактирование с элементами
-                try:
-                    result = await self.client.edit_message(
-                        chat_id=chat_id,
-                        message_id=msg_id,
-                        text=clean_text,
-                        elements=elements,
-                        **kwargs
-                    )
-                except TypeError as te:
-                    # Клиент, вероятно, не принимает elements — попробуем без него
-                    print(f"⚠️ client.edit_message не поддерживает elements (TypeError): {te}; пробуем edit без элементов")
-                    try:
-                        result = await self.client.edit_message(
-                            chat_id=chat_id,
-                            message_id=msg_id,
-                            text=clean_text,
-                            **kwargs
-                        )
-                    except Exception as e2:
-                        print(f"⚠️ Редактирование (text only) тоже провалилось: {e2}")
-                        result = None
-                except Exception as e:
-                    # Любая другая ошибка — логируем и считаем, что редактирование не удалось
-                    print(f"⚠️ Ошибка при попытке edit_message с elements: {e}")
-                    result = None
+                # 1) Редактирование с элементами через низкоуровневый API
+                result = await self._edit_message_with_elements(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    text=clean_text,
+                    elements=elements
+                )
 
                 # Если редактирование вернуло None => делаем fallback — отправляем новое сообщение с элементами
                 if result is None:
@@ -295,9 +278,10 @@ class API:
             # Fallback — если markdown, отправляем новое сообщение с элементами; иначе обычное сообщение
             if markdown:
                 try:
-                    from pymax.markdown_parser import get_markdown_parser
-                    parser = get_markdown_parser()
-                    clean_text, elements = parser.parse(text)
+                    from pymax.formatting import Formatting
+                    formatter = Formatting()
+                    elements, clean_text = formatter.get_elements_from_markdown(text)
+                    clean_text = clean_text.rstrip('\n')  # Убираем trailing newline
                     print(f"📤 Попытка отправить новое сообщение с форматированием после ошибки редактирования")
                     return await self._send_message_with_elements(
                         chat_id=chat_id,
@@ -331,9 +315,10 @@ class API:
             print(f"🔧 Используем ID = 0 для отправки в 'Избранное'")
         # Если включен markdown, парсим текст
         if markdown:
-            from pymax.markdown_parser import get_markdown_parser
-            parser = get_markdown_parser()
-            clean_text, elements = parser.parse(text)
+            from pymax.formatting import Formatting
+            formatter = Formatting()
+            elements, clean_text = formatter.get_elements_from_markdown(text)
+            clean_text = clean_text.rstrip('\n')  # Убираем trailing newline
             print(f"📝 Markdown парсинг: '{text}' -> '{clean_text}' с {len(elements)} элементами")
             print(f"🔍 Элементы: {elements}")
             # Отправляем сообщение с элементами форматирования
@@ -347,9 +332,61 @@ class API:
         else:
             return await self.client.send_message(text=text, chat_id=chat_id, notify=notify, **kwargs)
     
+    async def _edit_message_with_elements(self, chat_id, message_id, text, elements):
+        """Редактирует сообщение с элементами форматирования через низкоуровневый API."""
+        try:
+            from pymax.static.enum import Opcode
+            from pymax.payloads import EditMessagePayload, MessageElement
+            
+            print(f"📝 Редактируем сообщение {message_id} с форматированием в чате {chat_id}")
+            print(f"   Текст: {text}")
+            print(f"   Элементы: {elements}")
+            
+            # Преобразуем элементы форматирования в MessageElement объекты
+            message_elements = []
+            for el in elements:
+                # Получаем тип элемента как строку
+                el_type = el.type.value if hasattr(el.type, 'value') else str(el.type)
+                message_element = MessageElement(
+                    type=el_type,
+                    from_=el.from_,
+                    length=el.length
+                )
+                message_elements.append(message_element)
+            
+            payload = EditMessagePayload(
+                chatId=chat_id,
+                messageId=int(message_id),
+                text=text,
+                elements=message_elements,
+                attaches=[]
+            ).model_dump(by_alias=True)
+            
+            print(f"🔍 Payload для редактирования: {payload}")
+            
+            data = await self.client._send_and_wait(
+                opcode=Opcode.MSG_EDIT,
+                payload=payload
+            )
+            
+            print(f"🔍 Ответ от сервера: {data}")
+            
+            if error := data.get("payload", {}).get("error"):
+                print(f"❌ Ошибка редактирования сообщения с форматированием: {error}")
+                return None
+                
+            print(f"✅ Сообщение с форматированием успешно отредактировано")
+            return data
+            
+        except Exception as e:
+            print(f"❌ Ошибка при редактировании сообщения с форматированием: {e}")
+            import traceback
+            print(f"🔍 DEBUG: Traceback: {traceback.format_exc()}")
+            return None
+    
     async def _send_message_with_elements(self, chat_id, text, elements, attaches=None, notify=False, **kwargs):
         """Отправляет сообщение с элементами форматирования."""
-        from pymax.static import Opcode
+        from pymax.static.enum import Opcode
         from pymax.payloads import SendMessagePayload, SendMessagePayloadMessage
         import time
         # Проверяем валидность chat_id
@@ -420,9 +457,10 @@ class API:
             
             # Если включен markdown, парсим текст
             if markdown:
-                from pymax.markdown_parser import get_markdown_parser
-                parser = get_markdown_parser()
-                clean_text, elements = parser.parse_to_max_format(text)
+                from pymax.formatting import Formatting
+                formatter = Formatting()
+                elements, clean_text = formatter.get_elements_from_markdown(text)
+                clean_text = clean_text.rstrip('\n')  # Убираем trailing newline
                 print(f"📝 Markdown парсинг для файла: '{text}' -> '{clean_text}' с {len(elements)} элементами")
                 
                 # Отправляем сообщение с файлом и элементами форматирования
@@ -447,7 +485,7 @@ class API:
     async def _send_file_with_elements(self, chat_id, text, elements, file_token, filename, **kwargs):
         """Отправляет файл с элементами форматирования."""
         try:
-            from pymax.static import Opcode
+            from pymax.static.enum import Opcode
             from pymax.payloads import SendMessagePayload, SendMessagePayloadMessage
             import time
             
@@ -525,7 +563,6 @@ class API:
             import os
             from pathlib import Path
             from pymax.files import Photo
-            from pymax.static import AttachType
 
             is_url = isinstance(file_path, str) and (file_path.startswith('http://') or file_path.startswith('https://'))
             temp_file = None
@@ -568,8 +605,10 @@ class API:
 
             # Если включен markdown, парсим текст
             if markdown:
-                from pymax.markdown_parser import markdown_parser
-                clean_text, elements = markdown_parser.parse_to_max_format(text)
+                from pymax.formatting import Formatting
+                formatter = Formatting()
+                elements, clean_text = formatter.get_elements_from_markdown(text)
+                clean_text = clean_text.rstrip('\n')  # Убираем trailing newline
                 print(f"📝 Markdown парсинг для фото: '{text}' -> '{clean_text}' с {len(elements)} элементами")
                 
                 # Отправляем сообщение с фотографией и элементами форматирования
@@ -605,7 +644,7 @@ class API:
     async def _get_file_upload_url(self):
         """Получает URL для загрузки файла."""
         try:
-            from pymax.static import Opcode
+            from pymax.static.enum import Opcode
             from pymax.payloads import UploadPhotoPayload
             
             print("🔍 DEBUG: Запрашиваем URL для загрузки файла...")
@@ -803,7 +842,7 @@ class API:
     async def _send_message_with_file(self, chat_id, text, file_token, filename, **kwargs):
         """Отправляет сообщение с файлом."""
         try:
-            from pymax.static import Opcode
+            from pymax.static.enum import Opcode
             from pymax.payloads import SendMessagePayload, SendMessagePayloadMessage
             import time
             
@@ -918,7 +957,7 @@ class API:
             print(f"   Chat ID: {chat_id}")
             
             # Используем WebSocket API для получения URL файла
-            from pymax.static import Opcode
+            from pymax.static.enum import Opcode
             
             print("🔍 DEBUG: Отправляем запрос FILE_DOWNLOAD через WebSocket...")
             
